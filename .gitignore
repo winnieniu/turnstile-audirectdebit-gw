@@ -1,0 +1,23 @@
+# .gitignore stops certain file patterns from ever becoming tracked by Git.
+# Syntax for .gitignore is documented at <https://git-scm.com/docs/gitignore>
+
+**/build
+**/.idea/workspace.xml
+**/.idea/tasks.xml
+**/.gradle
+**/*.jar
+**/VAADIN/widgetsets
+**/bin
+
+# Eclipse project meta-files
+**/.classpath
+**/.project
+**/.settings
+**/classes/
+
+# This file is sometimes produced by Mac OS X Finder
+**/.DS_Store
+
+# In UNIX convention, a filename that ends in tilde is considered a backup of something.
+**/*~
+

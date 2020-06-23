@@ -1,0 +1,199 @@
+#!/bin/sh
+# On an Inomial developer workstation this script is intended to be a one-stop-shop to:
+#  1. Compile the project if any source files changed.
+#     The clean task can be run beforehand if requested.
+#  2. Build a docker image and store on local system repository.
+#  3. Create a development-specific docker container named "<username>-<service>"
+#     (or replace existing one of same name) based on docker-compose.yml.
+#     The project name can be overriden by the COMPOSE_PROJECT_NAME environment variable.
+#     The JAVA_OPTS environment variable for the microservice can be overridden in arguments to
+#     this script.
+#  4. If the controlling terminal is an xterm, set the terminal title to the service name, to help
+#     make identification of the terminal tab/window easier.
+#  4. Start the docker container using "docker start" and leave the docker client process attached as
+#     the foreground process for the terminal until Ctrl-C is pressed (which will then terminate
+#     the microservice and cause the docker client to exit afterwards).
+#     If the user requested, the JVM can also pause at startup until a remote debugger connects.
+#
+#  Using this script will allow some advantages over the previously-suggested "gradle up" target:
+#
+#  a) as Gradle is no longer running, its progress status messages won't be clobbering the standard
+#     output from the microservice, and the memory overhead of its JVM on the host machine is
+#     avoided (since Gradle has nothing else to do at that point).
+#
+#  b) "docker start" won't prefix each line of standard output from the microservice with the
+#     service name, unlike "docker-compose up" as that doesn't tell us anything we don't already
+#     know, makes copying-and-pasting of log snippets easier, and eliminating that text also
+#     makes better use of horizontal screen real estate.
+#
+#  c) Pressing ctrl-\ (backslash) will send signal SIGQUIT to the JVM inside the docker container,
+#     which will cause it to print an instaneous jstack printout to standard output (can be useful
+#     for identifying stuck/deadlocked threads and heap memory usage w/o having to log into the
+#     container). This isn't possible if you use "gradle up" since the gradle JVM will intercept
+#     the SIGQUIT signal instead.
+#
+#  This shell script is intended to be project-agnostic and should *not* hard-code the project name
+#  at any point. It should also not make any assumptions about the current directory (to allow the
+#  developer to launch the project from a sub-directory of the project directory hierarchy).
+#
+#  Note the intention to use the logged-in username as the project name by default, to help
+#  distinguish the docker container from the reference devstack containers that are in
+#  the inomial.io repository.
+
+
+# Prints the command to standard output as it executes it (like set -x, but selective).
+# Terminates this script if it returns non-zero exit status.
+log_run_cmd() {
+  printf '%s' "$PS4"
+  printf '%q ' "$@"
+  printf '\n'
+  "$@" || exit $?
+}
+
+# Prints a command to standard output as a nested command (one that is being run in a subshell),
+# but doesn't execute it (so we don't interfere with the output capture).
+log_nested_cmd() {
+  printf '%s' "${PS4:0:1}${PS4:0:1} "
+  printf '%q ' "$@"
+  printf '\n'
+}
+
+die() {
+  printf '%s: %s\n' "$progname" "$*" >&2
+  exit 1
+}
+
+warn() {
+  printf '%s: warning: %s\n' "$progname" "$*" >&2
+}
+
+# Name of this script (allows renaming to avoid conflicts)
+progname=$(basename $0)
+# Directory containing this script
+topdir=$(dirname $0)
+
+# Gradle target that compiles and then builds the docker image.
+default_gradle_target=mkdocker
+GRADLE_TARGET=${GRADLE_TARGET:-$default_gradle_target}
+# Location of docker-compose.yml file to use
+# cf. https://docs.docker.com/compose/reference/envvars/
+default_compose_file="$topdir/docker-compose.yml"
+COMPOSE_FILE=${COMPOSE_FILE:-$default_compose_file}
+# Default docker-compose project name
+default_compose_project_name=${USER//[^0-9A-Za-z]}
+COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-$default_compose_project_name}
+
+do_clean=0
+do_debug=0
+do_help=0
+jvm_passthru_args=""
+for arg; do
+  case "$arg" in
+    -h | --help) do_help=1;;
+    clean) do_clean=1;;
+    debug) do_debug=1;;
+    -[DX]*) jvm_passthru_args="$jvm_passthru_args $arg";;
+    *) warn "Unrecognised argument \`$arg', ignoring.";;
+  esac
+done
+
+if [ $do_help -eq 1 ]; then
+  cat <<EOF
+Usage: $topdir/$progname [clean] [debug] [-DNAME=VALUE...] [-X...]
+Compiles this microservice, builds a docker image & container and launches it.
+
+  clean         Run Gradle "clean" task before building project.
+  debug         Instruct microservice JVM to suspend execution at startup and
+                wait for remote debugger to connect to port 9009/tcp before
+                starting application via main() method.
+
+The following options are passed verbatim to the microservice JVM:
+  -DNAME=VALUE  Set JVM system property
+  -X...         JVM-specific performance tuning option;
+                see output of "java -X" for possible list.
+
+Once the microservice is running, press ctrl-C to terminate it.
+Press ctrl-P,ctrl-Q to detach the microservice from foreground & leave running.
+Press ctrl-\\ to obtain an instant jstack report from the microservice JVM.
+
+The following environment variables influence this script if set.
+  GRADLE                Path to gradle binary or wrapper script
+  GRADLE_TARGET         Gradle target to invoke (default=$default_gradle_target)
+  GRADLE_OPTS           Any additional options to pass to Gradle.
+  COMPOSE_PROJECT_NAME  docker-compose project name (default=$default_compose_project_name)
+  COMPOSE_FILE          docker-compose.yml file to use
+                        (default: use the one in same directory as this script)
+EOF
+  exit 0
+fi
+
+if [ $do_clean -eq 1 ]; then
+  GRADLE_TARGET="clean $GRADLE_TARGET"
+fi
+
+# Compile project with Gradle
+if [ "$topdir" != . ]; then
+  gradle_buildfile_opts="--build-file=$topdir/build.gradle"
+else
+  gradle_buildfile_opts=""
+fi
+if [ -n "$GRADLE" ]; then
+  log_run_cmd $GRADLE ${gradle_buildfile_opts:+"$gradle_buildfile_opts"} $GRADLE_OPTS $GRADLE_TARGET
+elif [ -f "$topdir/gradlew" -a -x "$topdir/gradlew" ]; then
+  log_run_cmd $topdir/gradlew ${gradle_buildfile_opts:+"$gradle_buildfile_opts"} $GRADLE_OPTS $GRADLE_TARGET
+else
+  log_run_cmd gradle ${gradle_buildfile_opts:+"$gradle_buildfile_opts"} $GRADLE_OPTS $GRADLE_TARGET
+fi
+
+# The shell script that launches Gradle uses JAVA_OPTS to pass on any arguments to the Gradle JVM, so we
+# should only export this variable for docker-compose once we're done with Gradle. 
+if [ $do_debug -eq 1 ]; then
+  export JAVA_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=9009 $jvm_passthru_args"
+else
+  export JAVA_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=9009 $jvm_passthru_args"
+fi
+
+# Determine the docker service name for this project
+get_service_cmd="docker-compose -f $COMPOSE_FILE config --services"
+log_nested_cmd $get_service_cmd
+service=$($get_service_cmd) || die "Unable to establish docker service name for this project."
+
+# Build the docker container.
+# We use --no-start so that we can use "docker start" to launch and attach to the microservice
+# instead (so that signals will be correctly propagated, and lines of standard output from
+# the microservice aren't prefixed with the service name (which is redundant).
+# We're also assuming that the docker-compose.yml file will use the environment variable
+# $JAVA_OPTS to override any JVM command-line options for the microservice JVM.
+log_run_cmd docker-compose -f $COMPOSE_FILE -p $COMPOSE_PROJECT_NAME up --no-start
+
+container=${COMPOSE_PROJECT_NAME}_${service}_1
+
+# Check if the terminal is xterm-capable
+if [ `expr "$TERM" : xterm` -gt 0 ]; then
+  is_xterm=1
+  # Lookup terminal sequences for changing terminal title text in a portable manner.
+  # tsl: "To Status Line" (following text forms new terminal title)
+  # fsl: "From Status Line" (ends a tsl command)
+  # Unfortunately tput(1) will only reliably retrieve these sequences if the terminal name
+  # is given as "xterm+sl".
+  tsl=`tput -Txterm+sl tsl`
+  fsl=`tput -Txterm+sl fsl`
+else
+  is_xterm=0
+fi
+
+# If terminal is an xterm, then set terminal title to service name.
+[ $is_xterm -eq 1 ] && printf '%s' "${tsl}${service}${fsl}"
+
+# Since the user pressing ctrl-C to stop the microservice will also inevitably terminate
+# the Bourne shell process running this script at the same time via SIGINT, we'll need
+# to set up a signal trap handler to restore the xterm title.
+cleanup() {
+  # Reset terminal title (if previously set) as a courtesy to the user.
+  [ $is_xterm -eq 1 ] && printf '%s' "${tsl}${fsl}"
+}
+# n.b. SIGQUIT must be passed through to the microservice JVM (prints jstack).
+trap cleanup EXIT INT TERM
+
+# Launch container and attach microservice (via docker client) to terminal foreground.
+log_run_cmd docker start -a $container

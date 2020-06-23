@@ -1,0 +1,21 @@
+version: '3'
+
+networks:
+  infrastructure:
+    external: true
+
+services:
+  turnstile-audirectdebit-gw:
+    hostname: turnstile-audirectdebit-gw
+    image: inomial.io/turnstile-audirectdebit-gw
+    ports:
+    # Port assignments as per <https://wiki.inomial.net/home/devstack_host_ports>
+      - "17232:9009"
+      - "17273:8080"
+    environment:
+    # By default, enables the JVM debugger on internal port 9009/tcp.
+      JAVA_OPTS: "${JAVA_OPTS:--agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=9009}"
+    networks:
+      - infrastructure
+    volumes:
+      - ./devstack-secrets:/run/secrets:ro

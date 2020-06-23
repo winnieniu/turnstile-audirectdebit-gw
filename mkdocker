@@ -1,0 +1,10 @@
+#!/bin/bash
+
+set -e
+
+. build/resources/main/version.properties
+
+cp build/libs/turnstile-audirectdebit-gw-$version-all.jar docker
+pushd docker
+docker build --pull -t inomial.io/turnstile-audirectdebit-gw --build-arg version=$version .
+popd

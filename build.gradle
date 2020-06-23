@@ -1,0 +1,88 @@
+/*
+ * Australia direct-debit Turnstile gateway.
+   This microservice runs in Java SE and uses secore library.
+ */
+
+buildscript {
+    // Dependencies for the build script itself, not the project to be built.
+    repositories {
+        mavenLocal()
+        mavenCentral()
+    }
+}
+
+plugins {
+    id 'com.github.johnrengelman.shadow' version '2.0.4'
+    id 'application'
+    id 'maven'
+}
+
+group = "com.inomial"
+version = "0.1.0"
+mainClassName = "com.inomial.turnstile.gw.audirectdebit.Main"
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+repositories {
+    mavenLocal()
+    maven {
+        url "https://maven.inomial.com/"
+    }
+    mavenCentral()
+}
+
+dependencies {
+    compile 'com.inomial:secore:1.4.8'
+    compile 'com.inomial:turnstile-gw-spi:0.0.15'
+    compile 'com.inomial:turnstile-gw-common:0.0.20'
+
+    // Needed for sending Kafka messages to Petal
+    compile 'com.inomial:cim:1.0.181'
+
+    // For the interface javax.servlet.http.HttpServletRequest
+    compileOnly 'javax.servlet:javax.servlet-api:3.1.0'
+
+    testCompile 'junit:junit:4.12'
+}
+
+build {
+    dependsOn {
+        shadowJar
+    }
+}
+
+shadowJar {
+    // cf. <http://imperceptiblethoughts.com/shadow/#controlling_jar_content_merging>
+    // This is needed to ensure that the the "/META-INF/services/javax.ws.rs.ext.Providers" files in the various
+    // RESTeasy-related jars are correctly concatenated together and prevent one file from overwriting the others.
+    //
+    // RESTeasy reads a list of class names from this file location (embedded in the .jar) upon startup to
+    // register the various marshalling/unmarshalling providers; this includes the stock providers (marshalling
+    // primitive types, strings and streams). Allowing this file to be clobbered will result in
+    // NoMessageBodyReaderFoundFailure/NoMessageBodyWriterFoundFailure exceptions at the entry or exit of a REST method
+    // that has a parameter or return type whose provider class has been left out.  -BLR
+    mergeServiceFiles()
+}
+
+task createProperties(dependsOn: classes) {
+    doLast {
+        new File("$buildDir/resources/main").mkdirs()
+        new File("$buildDir/resources/main/version.properties").withWriter { w ->
+            Properties p = new Properties()
+            p['version'] = project.version.toString()
+            p.store w, null
+        }
+    }
+}
+
+assemble {
+    dependsOn createProperties
+}
+
+// Make Docker
+task mkdocker(type: Exec, dependsOn: build) {
+    // FIXME: It would probably be quite useful to integrate the mkdocker script into this gradle script.
+    commandLine './mkdocker'
+}
+
+build.finalizedBy(mkdocker)
